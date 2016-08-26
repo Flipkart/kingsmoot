@@ -38,21 +38,32 @@ type Kingsmoot struct {
 	ds       DataStore
 	quitCh   chan bool
 	quitted  bool
-	name     string
+	conf     *Config
 	endpoint string
 }
 
-func NewKingsmoot(name string, conf *Config) (*Kingsmoot, error) {
+func New(name string, addresses []string) (*Kingsmoot, error) {
+	conf := &Config{Name: name, DataStoreType: "etcdv2", Addresses: addresses, DsOpTimeout: 500 * time.Millisecond, MasterDownAfter: 30 * time.Second}
 	ds, err := CreateDatastore(conf)
 	if nil != err {
 		Info.Println("Could not connet to datastore Error:", err)
 		ds.Close()
 		return nil, err
 	}
-	return &Kingsmoot{name: name, ds: ds, quitCh: make(chan bool)}, nil
+	return &Kingsmoot{conf: conf, ds: ds, quitCh: make(chan bool)}, nil
 }
 
-func (km *Kingsmoot) Join(endpoint string, fOrC interface{}, conf *Config) error {
+func NewFromConf(conf *Config) (*Kingsmoot, error) {
+	ds, err := CreateDatastore(conf)
+	if nil != err {
+		Info.Println("Could not connet to datastore Error:", err)
+		ds.Close()
+		return nil, err
+	}
+	return &Kingsmoot{conf: conf, ds: ds, quitCh: make(chan bool)}, nil
+}
+
+func (km *Kingsmoot) Join(endpoint string, fOrC interface{}) error {
 	if km.quitted {
 		return errors.New("Kingsmoot closed, create new instance to join")
 	}
@@ -62,7 +73,7 @@ func (km *Kingsmoot) Join(endpoint string, fOrC interface{}, conf *Config) error
 	km.endpoint = endpoint
 	switch t := fOrC.(type) {
 	case Candidate:
-		go km.candidateLoop(fOrC.(Candidate), conf.MasterDownAfter)
+		go km.candidateLoop(fOrC.(Candidate), km.conf.MasterDownAfter)
 	case Follower:
 		go km.followerLoop(fOrC.(Follower))
 	default:
@@ -73,7 +84,7 @@ func (km *Kingsmoot) Join(endpoint string, fOrC interface{}, conf *Config) error
 }
 
 func (km *Kingsmoot) Leader() (string, error) {
-	return km.ds.Get(km.name)
+	return km.ds.Get(km.conf.Name)
 }
 
 func (km *Kingsmoot) Exit() {
@@ -86,7 +97,7 @@ func (km *Kingsmoot) Exit() {
 	case <-time.After(10 * time.Second):
 		Fatal.Fatalln("Not able to exit gracefully within 10 seconds, force killing")
 	}
-	err := km.ds.CompareAndDel(km.name, km.endpoint)
+	err := km.ds.CompareAndDel(km.conf.Name, km.endpoint)
 	if nil != err {
 		switch err.(Error).Code() {
 		case CompareFailed, KeyNotFound:
@@ -122,7 +133,7 @@ func (km *Kingsmoot) followerLoop(c Follower) error {
 			}
 		case <-km.quitCh:
 		case <-l.errCh:
-			km.ds.Watch(km.name, l)
+			km.ds.Watch(km.conf.Name, l)
 		}
 	}
 	return nil
@@ -136,7 +147,7 @@ func (km *Kingsmoot) candidateLoop(c Candidate, downAfter time.Duration) {
 	for !km.quitted {
 		switch state {
 		case NotJoined:
-			master, err = km.ds.PutIfAbsent(km.name, km.endpoint, downAfter)
+			master, err = km.ds.PutIfAbsent(km.conf.Name, km.endpoint, downAfter)
 			if err != nil {
 				switch err.(Error).Code() {
 				case KeyExists:
@@ -156,7 +167,7 @@ func (km *Kingsmoot) candidateLoop(c Candidate, downAfter time.Duration) {
 		case Lead:
 			state = km.refreshTTL(c, downAfter)
 		case Follow:
-			newMaster, err := km.ds.PutIfAbsent(km.name, km.endpoint, downAfter)
+			newMaster, err := km.ds.PutIfAbsent(km.conf.Name, km.endpoint, downAfter)
 			if err == nil {
 				state = km.lead(c)
 			} else {
@@ -179,7 +190,7 @@ func (km *Kingsmoot) candidateLoop(c Candidate, downAfter time.Duration) {
 		case <-l.changeCh:
 		case <-km.quitCh:
 		case <-l.errCh:
-			km.ds.Watch(km.name, l)
+			km.ds.Watch(km.conf.Name, l)
 		}
 
 	}
@@ -207,7 +218,7 @@ func (km *Kingsmoot) kill(c Candidate) State {
 }
 
 func (km *Kingsmoot) lead(c Candidate) State {
-	Info.Printf("%v Elected as leader of %v", c, km.name)
+	Info.Printf("%v Elected as leader of %v", c, km.conf.Name)
 	err := c.Lead()
 	if err != nil {
 		Info.Printf("%v Failed to start as leader due to %v, going to suicide", c, err)
@@ -227,7 +238,7 @@ func (km *Kingsmoot) follow(c Candidate, master string) State {
 }
 
 func (km *Kingsmoot) refreshTTL(c Candidate, ttl time.Duration) State {
-	err := km.ds.RefreshTTL(km.name, km.endpoint, ttl)
+	err := km.ds.RefreshTTL(km.conf.Name, km.endpoint, ttl)
 	if err != nil {
 		Info.Printf("%v is no more the leader due to %v, going to suicide", c, err)
 		return km.kill(c)
@@ -237,6 +248,6 @@ func (km *Kingsmoot) refreshTTL(c Candidate, ttl time.Duration) State {
 
 func (km *Kingsmoot) registerListener() *KeyChangeListener {
 	l := &KeyChangeListener{changeCh: make(chan *Change, 1), errCh: make(chan error, 1)}
-	km.ds.Watch(km.name, l)
+	km.ds.Watch(km.conf.Name, l)
 	return l
 }

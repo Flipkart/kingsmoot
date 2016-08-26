@@ -36,7 +36,9 @@ func TestMain(m *testing.M) {
 }
 
 func testV2Conf() *kingsmoot.Config {
-	return &kingsmoot.Config{DataStoreType: "etcdv2",
+	return &kingsmoot.Config{
+		Name:            "akem",
+		DataStoreType:   "etcdv2",
 		Addresses:       []string{"http://localhost:2369"},
 		DsOpTimeout:     500 * time.Millisecond,
 		MasterDownAfter: 30 * time.Second}
@@ -85,9 +87,9 @@ func CreateCandidate(endpoint string) *MyCandidate {
 
 func TestJoinAsCandidate(t *testing.T) {
 	c1 := CreateCandidate("akem1:6379")
-	km1, err := kingsmoot.NewKingsmoot("akem", testV2Conf())
+	km1, err := kingsmoot.New("akem", []string{"http://localhost:2369"})
 	assertNil(t, err, "1:Failed to create kingsmoot")
-	err = km1.Join(c1.endpoint, c1, testV2Conf())
+	err = km1.Join(c1.endpoint, c1)
 	assertNil(t, err, "2:Failed to join leader election")
 	defer km1.Exit()
 	state, err := readState(c1.stateCh, 10*time.Millisecond)
@@ -96,8 +98,8 @@ func TestJoinAsCandidate(t *testing.T) {
 		t.Fatalf("%v should have been leader", c1)
 	}
 	c2 := CreateCandidate("akem2:6379")
-	km2, err := kingsmoot.NewKingsmoot("akem", testV2Conf())
-	err = km2.Join(c2.endpoint, c2, testV2Conf())
+	km2, err := kingsmoot.New("akem", []string{"http://localhost:2369"})
+	err = km2.Join(c2.endpoint, c2)
 	assertNil(t, err, "4:Failed to join leader election")
 	defer km2.Exit()
 	state, err = readState(c2.stateCh, 20*time.Millisecond)
@@ -112,9 +114,9 @@ func TestJoinAsCandidate(t *testing.T) {
 		t.Fatalf("Should have been Leader %v", c2)
 	}
 	c1 = CreateCandidate("akem1:6379")
-	km1, err = kingsmoot.NewKingsmoot("akem", testV2Conf())
+	km1, err = kingsmoot.NewFromConf(testV2Conf())
 	assertNil(t, err, "7:Failed to create kingsmoot")
-	err = km1.Join(c1.endpoint, c1, testV2Conf())
+	err = km1.Join(c1.endpoint, c1)
 	assertNil(t, err, "8:Failed to join leader election")
 	state, err = readState(c1.stateCh, 10*time.Millisecond)
 	assertNil(t, err, fmt.Sprintf("9:Failed to get notification for %v", c1))
