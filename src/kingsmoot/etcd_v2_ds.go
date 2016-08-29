@@ -161,5 +161,13 @@ func NewEtcdV2DataStore(conf *Config) (DataStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &EtcdV2DataStore{client: client}, nil
+
+	ds := &EtcdV2DataStore{client: client}
+	if _, err := ds.Get("ping"); err != nil {
+		if err.(Error).Code() != KeyNotFound {
+			ds.Close()
+			return nil, err
+		}
+	}
+	return ds, nil
 }

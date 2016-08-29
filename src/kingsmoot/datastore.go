@@ -21,15 +21,28 @@ type DataStore interface {
 type ChangeType int
 
 const (
-	Created ChangeType = 1
-	Updated ChangeType = 2
-	Deleted ChangeType = 3
+	Created ChangeType = 1 + iota
+	Updated
+	Deleted
 )
+
+var changeTypes = []string{
+	"Created",
+	"Updated",
+	"Deleted"}
+
+func (ct ChangeType) String() string {
+	return changeTypes[ct-1]
+}
 
 type Change struct {
 	ChangeType ChangeType
 	NewValue   string
 	PrevValue  string
+}
+
+func (c *Change) String() string {
+	return fmt.Sprintf("%v:Prev[%v]:New[%v]", c.ChangeType, c.PrevValue, c.NewValue)
 }
 
 type Listener interface {

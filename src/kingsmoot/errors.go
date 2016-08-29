@@ -5,13 +5,25 @@ import "fmt"
 type ErrorCode int
 
 const (
-	InvalidArgument ErrorCode = 1
-	KeyNotFound     ErrorCode = 2
-	KeyExists       ErrorCode = 3
-	CompareFailed   ErrorCode = 4
-	DataStoreError  ErrorCode = 5
-	Timeout         ErrorCode = 6
+	InvalidArgument ErrorCode = 1 + iota
+	KeyNotFound
+	KeyExists
+	CompareFailed
+	DataStoreError
+	Timeout
 )
+
+var errorCodes = []string{
+	"InvalidArgument",
+	"KeyNotFound",
+	"KeyExists",
+	"CompareFailed",
+	"DataStoreError",
+	"Timeout"}
+
+func (e ErrorCode) String() string {
+	return errorCodes[e-1]
+}
 
 type Error interface {
 	error

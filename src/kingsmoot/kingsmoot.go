@@ -6,13 +6,24 @@ import (
 	"time"
 )
 
-type State int8
+type Role int8
 
 const (
-	NotJoined State = 1
-	Follow    State = 2
-	Lead      State = 3
+	NotAMember Role = iota
+	Follower
+	Leader
+	Dead
 )
+
+var roles = []string{
+	"NotAMember",
+	"Follower",
+	"Leader",
+	"Dead"}
+
+func (s Role) String() string {
+	return roles[s]
+}
 
 type Config struct {
 	Name            string
@@ -23,63 +34,58 @@ type Config struct {
 	CustomConf      map[string]string
 }
 
-type Follower interface {
-	fmt.Stringer
-	Follow(master string) error
+type MemberShip struct {
+	Role   Role
+	Leader string
 }
-
 type Candidate interface {
-	Follower
-	Lead() error
-	Resign() error
+	fmt.Stringer
+	UpdateMembership(memberShip MemberShip) error
 }
 
 type Kingsmoot struct {
-	ds       DataStore
-	quitCh   chan bool
-	quitted  bool
-	conf     *Config
-	endpoint string
+	conf       *Config
+	endpoint   string
+	c          Candidate
+	role       Role
+	currLeader string
+	ds         DataStore
+	quitCh     chan bool
 }
 
 func New(name string, addresses []string) (*Kingsmoot, error) {
 	conf := &Config{Name: name, DataStoreType: "etcdv2", Addresses: addresses, DsOpTimeout: 500 * time.Millisecond, MasterDownAfter: 30 * time.Second}
 	ds, err := CreateDatastore(conf)
 	if nil != err {
-		Info.Println("Could not connet to datastore Error:", err)
-		ds.Close()
+		Info.Println("Could not connet to datastore Error: ", err)
 		return nil, err
 	}
-	return &Kingsmoot{conf: conf, ds: ds, quitCh: make(chan bool)}, nil
+	return &Kingsmoot{conf: conf, ds: ds, quitCh: make(chan bool, 1)}, nil
 }
 
 func NewFromConf(conf *Config) (*Kingsmoot, error) {
 	ds, err := CreateDatastore(conf)
 	if nil != err {
-		Info.Println("Could not connet to datastore Error:", err)
+		Info.Println("Could not connet to datastore Error: ", err)
 		ds.Close()
 		return nil, err
 	}
-	return &Kingsmoot{conf: conf, ds: ds, quitCh: make(chan bool)}, nil
+	return &Kingsmoot{conf: conf, ds: ds, quitCh: make(chan bool, 1)}, nil
 }
 
-func (km *Kingsmoot) Join(endpoint string, fOrC interface{}) error {
-	if km.quitted {
+func (km *Kingsmoot) Join(endpoint string, c Candidate) error {
+	if km.isDead() {
 		return errors.New("Kingsmoot closed, create new instance to join")
 	}
 	if km.endpoint != "" {
 		return errors.New(fmt.Sprintf("Already in use for %v, create new instance to join", km.endpoint))
 	}
 	km.endpoint = endpoint
-	switch t := fOrC.(type) {
-	case Candidate:
-		go km.candidateLoop(fOrC.(Candidate), km.conf.MasterDownAfter)
-	case Follower:
-		go km.followerLoop(fOrC.(Follower))
-	default:
-		_ = t
-		return errors.New(fmt.Sprintf("%T is neither Follower nor Candidate", fOrC))
+	km.c = c
+	if err := km.joinLeaderElection(); err != nil {
+		return err
 	}
+	go km.candidateLoop()
 	return nil
 }
 
@@ -87,16 +93,20 @@ func (km *Kingsmoot) Leader() (string, error) {
 	return km.ds.Get(km.conf.Name)
 }
 
+func (km *Kingsmoot) isDead() bool {
+	return km.role == Dead
+}
+
+func (km *Kingsmoot) setRole(role Role) {
+	km.role = role
+}
+
 func (km *Kingsmoot) Exit() {
-	if km.quitted {
+	if km.isDead() {
 		return
 	}
-	km.quitted = true
-	select {
-	case km.quitCh <- true:
-	case <-time.After(10 * time.Second):
-		Fatal.Fatalln("Not able to exit gracefully within 10 seconds, force killing")
-	}
+	km.setRole(Dead)
+	close(km.quitCh)
 	err := km.ds.CompareAndDel(km.conf.Name, km.endpoint)
 	if nil != err {
 		switch err.(Error).Code() {
@@ -111,89 +121,55 @@ func (km *Kingsmoot) Exit() {
 	}
 }
 
-func (km *Kingsmoot) followerLoop(c Follower) error {
-	leader, err := km.Leader()
-	if nil != err {
-		return err
-	}
-	c.Follow(leader)
-	l := km.registerListener()
-	for !km.quitted {
-		select {
-		case change := <-l.changeCh:
-			switch change.ChangeType {
-			case Created, Updated:
-				if leader != change.NewValue {
-					leader = change.NewValue
-					c.Follow(leader)
-				}
-			case Deleted:
-				leader = ""
-				c.Follow("")
-			}
-		case <-km.quitCh:
-		case <-l.errCh:
-			km.ds.Watch(km.conf.Name, l)
-		}
-	}
-	return nil
-}
-
-func (km *Kingsmoot) candidateLoop(c Candidate, downAfter time.Duration) {
-	state := NotJoined
-	var master string
+func (km *Kingsmoot) candidateLoop() {
 	var err error
 	l := km.registerListener()
-	for !km.quitted {
-		switch state {
-		case NotJoined:
-			master, err = km.ds.PutIfAbsent(km.conf.Name, km.endpoint, downAfter)
-			if err != nil {
-				switch err.(Error).Code() {
-				case KeyExists:
-					if master == km.endpoint {
-						state = km.lead(c)
-					} else {
-						state = km.follow(c, master)
-					}
-				default:
-					Info.Printf("Leader election failed due to %v, going to suicide", err)
-					state = km.kill(c)
-				}
-
-			} else {
-				state = km.lead(c)
-			}
-		case Lead:
-			state = km.refreshTTL(c, downAfter)
-		case Follow:
-			newMaster, err := km.ds.PutIfAbsent(km.conf.Name, km.endpoint, downAfter)
-			if err == nil {
-				state = km.lead(c)
-			} else {
-				switch err.(Error).Code() {
-				case KeyExists:
-					if newMaster == "" {
-						state = NotJoined
-					} else if newMaster != master {
-						state = km.follow(c, master)
-					}
-				default:
-					Info.Printf("Leader election failed due to %v, going to suicide", err)
-					state = km.kill(c)
-				}
-			}
-
+	for !km.isDead() {
+		switch km.role {
+		case NotAMember, Follower:
+			km.joinLeaderElection()
+		case Leader:
+			km.refreshTTL()
 		}
 		select {
-		case <-time.After(downAfter / 2):
-		case <-l.changeCh:
+		case <-time.After(km.conf.MasterDownAfter / 2):
+		case change := <-l.changeCh:
+			Info.Printf("Change event received : %v", change)
 		case <-km.quitCh:
-		case <-l.errCh:
+			Info.Println("Quit signal received")
+		case err = <-l.errCh:
+			Info.Printf("Error signal received : %v", err)
+			<-time.After(km.conf.MasterDownAfter)
 			km.ds.Watch(km.conf.Name, l)
 		}
 
 	}
+}
+
+func (km *Kingsmoot) joinLeaderElection() error {
+	var err error
+	currLeader, err := km.ds.PutIfAbsent(km.conf.Name, km.endpoint, km.conf.MasterDownAfter)
+	if err != nil {
+		switch err.(Error).Code() {
+		case KeyExists:
+			if currLeader == km.endpoint {
+				km.currLeader = currLeader
+				return km.lead()
+			} else if currLeader != km.currLeader {
+				km.currLeader = currLeader
+				return km.follow()
+			}
+		default:
+			Info.Printf("Leader election failed due to %v, going to kick out from election", err)
+			km.notAMember()
+			return errors.New(fmt.Sprintf("Leader election failed due to %v, going to kick out from election", err))
+		}
+
+	} else {
+		km.currLeader = currLeader
+		return km.lead()
+	}
+	return nil
 }
 
 type KeyChangeListener struct {
@@ -209,41 +185,47 @@ func (l *KeyChangeListener) Bye(err error) {
 	l.errCh <- err
 }
 
-func (km *Kingsmoot) kill(c Candidate) State {
-	err := c.Resign()
+func (km *Kingsmoot) notAMember() {
+	err := km.c.UpdateMembership(MemberShip{Role: NotAMember})
 	if err != nil {
-		Fatal.Fatalf("Suicide attempt of %v failed due %v", c, err)
+		Fatal.Fatalf("Failed to update membership of %v due %v", km.c, err)
 	}
-	return NotJoined
+	km.setRole(NotAMember)
+	km.currLeader = ""
 }
 
-func (km *Kingsmoot) lead(c Candidate) State {
-	Info.Printf("%v Elected as leader of %v", c, km.conf.Name)
-	err := c.Lead()
+func (km *Kingsmoot) lead() error {
+	Info.Printf("%v Elected as leader of %v", km.c, km.conf.Name)
+	err := km.c.UpdateMembership(MemberShip{Role: Leader})
 	if err != nil {
-		Info.Printf("%v Failed to start as leader due to %v, going to suicide", c, err)
-		return km.kill(c)
+		Info.Printf("%v Failed to start as leader due to %v, going to kick out from election", km.c, err)
+		km.notAMember()
+		return errors.New(fmt.Sprintf("%v Failed to start as leader due to %v, going to kick out from election", km.c, err))
 	}
-	return Lead
+	km.setRole(Leader)
+	return nil
 }
 
-func (km *Kingsmoot) follow(c Candidate, master string) State {
-	Info.Printf("%v Elected as follower of %v", c, master)
-	err := c.Follow(master)
+func (km *Kingsmoot) follow() error {
+	Info.Printf("%v Elected as follower of %v", km.c, km.currLeader)
+	err := km.c.UpdateMembership(MemberShip{Role: Follower, Leader: km.currLeader})
 	if err != nil {
-		Info.Printf("%v Start as follower failed due to %v, going to suicide", c, err)
-		return km.kill(c)
+		Info.Printf("%v Failed to start as follower due to %v, going to kick out from election", km.c, err)
+		km.notAMember()
+		return errors.New(fmt.Sprintf("%v Failed to start as follower due to %v, going to kick out from election", km.c, err))
 	}
-	return Follow
+	km.setRole(Follower)
+	return nil
 }
 
-func (km *Kingsmoot) refreshTTL(c Candidate, ttl time.Duration) State {
-	err := km.ds.RefreshTTL(km.conf.Name, km.endpoint, ttl)
+func (km *Kingsmoot) refreshTTL() {
+	err := km.ds.RefreshTTL(km.conf.Name, km.endpoint, km.conf.MasterDownAfter)
 	if err != nil {
-		Info.Printf("%v is no more the leader due to %v, going to suicide", c, err)
-		return km.kill(c)
+		Info.Printf("%v is no more the leader due to %v, going to kick out from election", km.c, err)
+		km.notAMember()
+		return
 	}
-	return Lead
+	km.setRole(Leader)
 }
 
 func (km *Kingsmoot) registerListener() *KeyChangeListener {
