@@ -5,7 +5,6 @@ import org.apache.commons.exec.DefaultExecutor;
 import org.testng.Assert;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
-import org.testng.annotations.Test;
 
 import java.io.IOException;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -60,7 +59,7 @@ public class KingsmootTest {
         executor.execute(pwd);
     }
 
-    @Test
+    //@Test
     public void testEtcdWatcher() throws Exception {
         String leader1 = "akem1";
         etcdSet(AKEM, leader1);
