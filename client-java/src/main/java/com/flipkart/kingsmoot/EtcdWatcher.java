@@ -27,7 +27,7 @@ public class EtcdWatcher implements Runnable, ResponsePromise.IsSimplePromiseRes
         String newValue = getValue(this.key);
         notifyIfRequired(newValue);
         waitForChange(this.key);
-        //new Thread(this, "EtcdWatcher").start();
+        new Thread(this, "EtcdWatcher").start();
     }
 
     private void waitForChange(String key) {
@@ -38,9 +38,6 @@ public class EtcdWatcher implements Runnable, ResponsePromise.IsSimplePromiseRes
             try {
                 EtcdResponsePromise<EtcdKeysResponse> responsePromise = etcdKeyGetRequest.send();
                 responsePromise.addListener(this);
-                if (null != responsePromise.getException()) {
-                    responsePromise.getException().printStackTrace();
-                }
                 watchSet = true;
             } catch (IOException e) {
                 sleep();
