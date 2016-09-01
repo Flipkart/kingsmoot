@@ -1,5 +1,8 @@
 package com.flipkart.kingsmoot;
 
+import com.flipkart.etcd.EtcdClient;
+import com.flipkart.etcd.EtcdErrorCode;
+import com.flipkart.etcd.EtcdException;
 import org.apache.commons.exec.CommandLine;
 import org.apache.commons.exec.DefaultExecutor;
 import org.testng.Assert;
@@ -46,7 +49,7 @@ public class KingsmootTest {
     private void startEtcd() throws IOException, InterruptedException {
         CommandLine pwd = CommandLine.parse("../src/kingsmoot/etcd.sh start");
         executor.execute(pwd);
-        Thread.sleep(2000);
+        Thread.sleep(5000);
     }
 
     @AfterMethod
@@ -54,9 +57,20 @@ public class KingsmootTest {
         stopEtcd();
     }
 
-    private void stopEtcd() throws IOException {
+    private void stopEtcd() throws IOException, InterruptedException {
         CommandLine pwd = CommandLine.parse("../src/kingsmoot/etcd.sh stop");
         executor.execute(pwd);
+        Thread.sleep(5000);
+    }
+
+    //@Test
+    public void testEtcdClientGet() throws Exception {
+        try {
+            EtcdClient etcdClient = new EtcdClient(new String[]{"http://localhost:2369"});
+            etcdClient.get("NonExistentKey");
+        } catch (EtcdException e) {
+            Assert.assertEquals(e.getErrorCode(), EtcdErrorCode.KeyNotFound);
+        }
     }
 
     //@Test
