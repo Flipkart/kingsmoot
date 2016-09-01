@@ -9,9 +9,9 @@ import (
 )
 
 type EtcdV2DataStore struct {
-	client client.KeysAPI
-	cancel context.CancelFunc
-	ctx    context.Context
+	keysClient client.KeysAPI
+	cancel     context.CancelFunc
+	ctx        context.Context
 }
 
 func (ev2DS *EtcdV2DataStore) Close() error {
@@ -31,14 +31,11 @@ func (ev2DS *EtcdV2DataStore) Close() error {
 }
 
 func (ev2DS *EtcdV2DataStore) Watch(k string, l Listener) error {
-	c := ev2DS.client
+	c := ev2DS.keysClient
 	w := c.Watcher(k, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	ev2DS.cancel = cancel
-	ev2DS.ctx = ctx
 	go func(watcher client.Watcher) {
 		for {
-			resp, err := watcher.Next(ctx)
+			resp, err := watcher.Next(ev2DS.ctx)
 			if nil != err {
 				l.Bye(&OpError{code: DataStoreError, op: "Watch", cause: err})
 				break
@@ -57,7 +54,7 @@ func (ev2DS *EtcdV2DataStore) Watch(k string, l Listener) error {
 }
 
 func (ev2DS *EtcdV2DataStore) Del(key string) error {
-	c := ev2DS.client
+	c := ev2DS.keysClient
 	_, err := c.Delete(context.TODO(), key, nil)
 	if err != nil {
 		return adapt(err, "Del")
@@ -66,7 +63,7 @@ func (ev2DS *EtcdV2DataStore) Del(key string) error {
 }
 
 func (ev2DS *EtcdV2DataStore) CompareAndDel(key string, value string) error {
-	c := ev2DS.client
+	c := ev2DS.keysClient
 	_, err := c.Delete(context.TODO(), key, &client.DeleteOptions{PrevValue: value})
 	if err != nil {
 		return adapt(err, "CompareAndDel")
@@ -75,7 +72,7 @@ func (ev2DS *EtcdV2DataStore) CompareAndDel(key string, value string) error {
 }
 
 func (ev2DS *EtcdV2DataStore) Get(key string) (string, error) {
-	c := ev2DS.client
+	c := ev2DS.keysClient
 	resp, err := c.Get(context.TODO(), key, &client.GetOptions{})
 	if nil != err {
 		return "", adapt(err, "Get")
@@ -84,7 +81,7 @@ func (ev2DS *EtcdV2DataStore) Get(key string) (string, error) {
 }
 
 func (ev2DS *EtcdV2DataStore) RefreshTTL(key string, value string, ttl time.Duration) error {
-	c := ev2DS.client
+	c := ev2DS.keysClient
 	_, err := c.Set(context.TODO(), key, "", &client.SetOptions{TTL: ttl, PrevValue: value, Refresh: true})
 	if nil != err {
 		return adapt(err, "RefreshTTL")
@@ -93,7 +90,7 @@ func (ev2DS *EtcdV2DataStore) RefreshTTL(key string, value string, ttl time.Dura
 }
 
 func (ev2DS *EtcdV2DataStore) PutIfAbsent(key string, value string, ttl time.Duration) (prevValue string, err error) {
-	c := ev2DS.client
+	c := ev2DS.keysClient
 	for {
 		_, err = c.Set(context.TODO(), key, value, &client.SetOptions{TTL: ttl, PrevExist: client.PrevNoExist})
 		if err != nil {
@@ -113,6 +110,15 @@ func (ev2DS *EtcdV2DataStore) PutIfAbsent(key string, value string, ttl time.Dur
 			}
 		} else {
 			return "", nil
+		}
+	}
+}
+
+func (ev2DS *EtcdV2DataStore) autoSync(c client.Client) {
+	for {
+		err := c.AutoSync(ev2DS.ctx, 10*time.Second)
+		if err == context.DeadlineExceeded || err == context.Canceled {
+			break
 		}
 	}
 }
@@ -140,34 +146,36 @@ func NewV2Config(conf *Config) (c *client.Config, err error) {
 		err = &InvalidArgumentError{Name: "addresses", Value: "", Expected: "Command separated http://host:port of seed servers"}
 		return nil, err
 	}
-	return &client.Config{Endpoints: addresses, HeaderTimeoutPerRequest: conf.DsOpTimeout}, nil
+	return &client.Config{Endpoints: addresses, HeaderTimeoutPerRequest: conf.DsOpTimeout, SelectionMode: client.EndpointSelectionPrioritizeLeader}, nil
 }
 
-func NewEtcdV2Client(conf *Config) (client.KeysAPI, error) {
+func NewEtcdV2Client(conf *Config) (client.Client, client.KeysAPI, error) {
 	c, err := NewV2Config(conf)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	cl, err := client.New(*c)
 	if err != nil {
 		err = &OpError{code: DataStoreError, op: "ConnectToEtcd", cause: err}
-		return nil, err
+		return nil, nil, err
 	}
-	return client.NewKeysAPI(cl), nil
+	return cl, client.NewKeysAPI(cl), nil
 }
 
 func NewEtcdV2DataStore(conf *Config) (DataStore, error) {
-	client, err := NewEtcdV2Client(conf)
+	client, keysAPI, err := NewEtcdV2Client(conf)
 	if err != nil {
 		return nil, err
 	}
 
-	ds := &EtcdV2DataStore{client: client}
+	ds := &EtcdV2DataStore{keysClient: keysAPI}
 	if _, err := ds.Get("ping"); err != nil {
 		if err.(Error).Code() != KeyNotFound {
 			ds.Close()
 			return nil, err
 		}
 	}
+	ds.ctx, ds.cancel = context.WithCancel(context.Background())
+	go ds.autoSync(client)
 	return ds, nil
 }
