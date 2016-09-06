@@ -3,18 +3,19 @@ package com.flipkart.etcd;
 import com.flipkart.kingsmoot.KingsmootException;
 import lombok.Getter;
 
+import java.io.Closeable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-public class EtcdWatcher implements Runnable {
+public class EtcdWatcher implements Runnable, Closeable {
     private static long POLLING_INTERVAL = TimeUnit.SECONDS.toMillis(10);
     private EtcdClient client;
     private final String key;
     private final List<EtcdKeyChangeListener> listeners = new ArrayList<>();
     @Getter
     private String currentValue;
-    private boolean closed;
+    private volatile boolean closed;
 
     public EtcdWatcher(EtcdClient client, String key, EtcdKeyChangeListener listener) {
         this.client = client;
@@ -48,6 +49,11 @@ public class EtcdWatcher implements Runnable {
             }
             sleep();
         }
+    }
+
+    @Override
+    public void close() {
+        closed = true;
     }
 
     private void sleep() {

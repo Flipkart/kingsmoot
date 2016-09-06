@@ -1,15 +1,19 @@
 package com.flipkart.etcd;
 
 import com.ning.http.client.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
-public class EtcdClient implements Runnable {
+public class EtcdClient implements Runnable, Closeable {
 
+    private static final Logger logger = LoggerFactory.getLogger(EtcdClient.class);
     private static final String LEADER_API = "/v2/members/leader";
     private static final String GET = "/v2/keys/";
     private static final int TIME_OUT = (int) TimeUnit.SECONDS.toMillis(1);
@@ -43,7 +47,7 @@ public class EtcdClient implements Runnable {
                     return resp.getLeaderUrl();
                 }
             } catch (IOException | EtcdException e) {
-                //DO nothing
+                logger.warn("Error while getting etcd leader from " + url, e);
             }
         }
         throw new EtcdException(EtcdErrorCode.ClientInternal, "No leader found");
@@ -106,16 +110,28 @@ public class EtcdClient implements Runnable {
                 leader = getLeader();
             } catch (EtcdException e) {
                 leader = null;
+            } catch (Exception e) {
+                logger.error("Error while discovering etcd leader", e);
             }
 
         }
     }
+
 
     private void sleep() {
         try {
             Thread.sleep(POLLING_INTERVAL);
         } catch (InterruptedException e) {
             //Do nothing
+        }
+    }
+
+    @Override
+    public void close() throws IOException {
+        closed = true;
+        asyncHttpClient.close();
+        for (EtcdWatcher etcdWatcher : watchers.values()) {
+            etcdWatcher.close();
         }
     }
 }

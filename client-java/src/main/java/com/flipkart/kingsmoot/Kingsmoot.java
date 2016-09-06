@@ -4,12 +4,12 @@ package com.flipkart.kingsmoot;
 import com.flipkart.etcd.EtcdClient;
 import com.flipkart.etcd.EtcdException;
 
-import java.util.concurrent.TimeUnit;
+import java.io.Closeable;
+import java.io.IOException;
 
-public class Kingsmoot {
+public class Kingsmoot implements Closeable {
 
     private final EtcdClient etcdClient;
-    private static int READ_TIMEOUT = (int) TimeUnit.SECONDS.toMillis(1);
 
     public Kingsmoot(Conf conf) throws KingsmootException {
         String[] servers = conf.getServers();
@@ -26,5 +26,11 @@ public class Kingsmoot {
             throw new KingsmootException("No Leader found for " + serviceName);
         }
         follower.onLeaderElect(currentValue);
+    }
+
+
+    @Override
+    public void close() throws IOException {
+        etcdClient.close();
     }
 }
