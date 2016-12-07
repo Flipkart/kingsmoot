@@ -1,13 +1,13 @@
 # kingsmoot
 
-A Leader election library written in GO which uses [ETCD](https://github.com/coreos/etcd) as the coordination framework. This can be glued to the processes who want to take part in leader election (processes/services written in GO) and it can give callbacks to start the service as leader or follower. 
+A Leader election library written in GO which uses [etcd](https://github.com/coreos/etcd) as the coordination framework. This can be glued to the processes who want to take part in leader election (processes/services written in Go) and it can give callbacks to start the service as leader or follower. 
 
-Internally it uses the following low level primitives provided by ETCD for coordination
-* putIfAbsent - Atomic putIfAbsent operation. All nodes participating in leader election tries to write the same key to ETCD and whichever node successfully writes the key becomes the leader
-* refreshTTL - The key is written with a TTL. Leader keeps refreshing the TTL to continue as leader. This acts like a heartbeat
-* watch - Followers watch for any changes in the key. Whenever the key gets deleted, the nodes try to write the key again. 
+Internally it uses the following low level primitives provided by etcd for coordination
+* `putIfAbsent` - Atomic key creation operation. All nodes participating in leader election try to write the same key to etcd and whichever node successfully writes the key becomes the leader
+* `refreshTTL` - The key is written with a TTL. Leader keeps refreshing the TTL to continue as leader. This acts like a heartbeat
+* `watch` - Followers watch for any changes in the key. Whenever the key gets deleted, the nodes try to write the key again. 
 
-# How to use it for participating in leader election
+# Participating in leader election
 
 * Implement Candidate interface
 * Create Kingsmoot with a service name
@@ -35,7 +35,8 @@ func (s *Node) UpdateMembership(memberShip kingsmoot.MemberShip) error {
 		s.memberShip = &memberShip
 		return nil
 	case kingsmoot.NotAMember:
-    // Logic to stop doing anything as it is niether follower, nor Leader. This generally happens it is not able to connect     // to coordination framework itself
+		// Logic to stop doing anything as it is niether Follower, nor Leader (e.g. if it's unable to connect
+		// to coordination framework itself)
 		s.memberShip = &memberShip
 		return nil
 	default:
